@@ -1,28 +1,8 @@
 import * as net from "net";
 import {NetLoc, NetLocish, asNetLoc} from "hlandau.Net/NetLoc";
-
-// Returns [ip, zone | ''].
-function splitIPv6Zone(ip: string): [string, string] {
-  const idx = ip.indexOf('%');
-  if (idx < 0)
-    return [ip, ''];
-
-  return [ip.substr(0, idx), ip.substr(idx+1)];
-}
+import * as IPFuncs from "hlandau.Net/IPFuncs";
 
 export type Scope = "tcp" | "tcp4" | "tcp6" | "udp" | "udp4" | "udp6" | "ip" | "ip4" | "ip6" | "unix" | "unixgram" | "unixpacket";
-
-function isIPv6NoZone(s: string): boolean {
-  return net.isIPv6(s) && s.indexOf('%') < 0;
-}
-
-function isValidIPNoZone(s: string): boolean {
-  return (typeof s === 'string') && (net.isIPv4(s) || isIPv6NoZone(s));
-}
-function assertValidIPNoZone(s: string) {
-  if (!isValidIPNoZone(s))
-    throw new Error(`not a valid IPv4 or IPv6 address: "${s}"`);
-}
 
 function isValidPort(n: number): boolean {
   return (typeof n === 'number' && n >= 0 && n <= 65535 && n % 1 === 0);
@@ -31,12 +11,8 @@ function assertValidPort(port: number) {
   if (!isValidPort(port))
     throw new Error(`port number must be an integer in range [0,65535], not "${port}"`);
 }
-
-function isValidZone(z: string): boolean {
-  return (typeof z === 'string');
-}
 function assertValidZone(z: string) {
-  if (!isValidZone(z))
+  if (typeof z !== 'string' || (z !== '' && !IPFuncs.validateZoneName(z)))
     throw new Error(`not a valid zone name: "${z}"`);
 }
 
@@ -53,27 +29,57 @@ export interface IAddr {
   toString(): string;
 }
 
+/* IP
+ * --
+ * Represents an IP address number. Does not include a zone name. Immutable.
+ */
+export type IPish = IP | string | Uint8Array;
+
+export class IP {
+  private __ip: Uint8Array; // length 4 or 16
+
+  constructor(ip: IPish) {
+    if (typeof ip === 'string')
+      this.__ip = IPFuncs.parseIP(ip);
+    else if (ip instanceof Uint8Array && (ip.length === 4 || ip.length === 16))
+      this.__ip = ip;
+    else if (ip instanceof IP)
+      return ip;
+    else
+      throw new Error(`IP constructor requires a string or Uint8Array of length 4 or 16`);
+
+    Object.freeze(this);
+  }
+
+  // Do not modify the bytes!
+  get bytes(): Uint8Array { return this.__ip; }
+  get isV6(): boolean { return this.__ip.length === 16; }
+  get isV4(): boolean { return !this.isV6; }
+
+  toString(): string { return IPFuncs.stringifyIP(this.__ip); }
+  inspect(): string { return `IP(${this.toString()})`; }
+}
+
 /* IPAddr
  * ------
  * Models a logical IP address (including a zone name, or a specification of no
  * particular zone). Immutable.
  */
 export class IPAddr implements IAddr {
-  private __ip: string;
+  private __ip: IP;
   private __zone: string;
 
-  constructor(ip: string, zone: string='') {
-    assertValidIPNoZone(ip);
+  constructor(ip: IPish, zone: string='') {
     assertValidZone(zone);
 
-    this.__ip   = ip;
+    this.__ip   = new IP(ip);
     this.__zone = zone;
 
     Object.freeze(this);
   }
 
   get network(): string { return 'ip'; }
-  get ip(): string { return this.__ip; }
+  get ip(): IP { return this.__ip; }
   get zone(): string { return this.__zone; }
 
   toString(): string {
@@ -81,11 +87,40 @@ export class IPAddr implements IAddr {
   }
 
   static resolve(addr: string): IPAddr {
-    if (net.isIPv6(addr)) {
-      const [ip, zone] = splitIPv6Zone(addr);
-      return new IPAddr(ip, zone);
-    } else
-      return new IPAddr(addr);
+    const [ip, zone] = IPFuncs.parseIPAddr(addr);
+    return new IPAddr(ip, zone || '');
+  }
+}
+
+/* IPNet
+ * -----
+ */
+export class IPNet implements IAddr {
+  private __ip: string;
+  private __prefixLength: number;
+
+  constructor(ip: string, prefixLength: number=128) {
+    if (prefixLength < 0 || prefixLength % 1 !== 0)
+      throw new Error(`prefix length must be non-negative integer`);
+
+    if (net.isIPv4(ip))
+      prefixLength = Math.min(32, prefixLength);
+    else if (net.isIPv6(ip))
+      prefixLength = Math.min(128, prefixLength);
+    else
+      throw new Error(`invalid IP address`);
+
+    this.__ip = ip;
+    this.__prefixLength = prefixLength;
+    Object.freeze(this);
+  }
+
+  get network(): string { return 'ip+net'; }
+  get ip(): string { return this.__ip; }
+  get prefixLength(): number { return this.__prefixLength; }
+
+  toString(): string {
+    return '${this.ip}/${this.prefixLength}';
   }
 }
 
@@ -95,12 +130,11 @@ export class IPAddr implements IAddr {
  * their endpoints. Immutable.
  */
 export abstract class L4Addr implements IAddr {
-  private __ip: string;
+  private __ip: IP;
   private __port: number;
   private __zone: string;
 
-  constructor(ip: string, port: number, zone: string='') {
-    assertValidIPNoZone(ip);
+  constructor(ip: IP, port: number, zone: string='') {
     assertValidPort(port);
     assertValidZone(zone);
 
@@ -112,15 +146,15 @@ export abstract class L4Addr implements IAddr {
   }
 
   abstract get network(): string;
-  get ip(): string { return this.__ip; }
+  get ip(): IP { return this.__ip; }
   get port(): number { return this.__port; }
   get zone(): string { return this.__zone; }
 
   get ipZone(): string { return `${this.ip}${this.zone !== '' ? ('%'+this.zone) : ''}`; }
-  get netLoc(): NetLoc { return [this.ip, this.port.toString()]; }
+  get netLoc(): NetLoc { return [this.ip.toString(), this.port.toString()]; }
 
   toString(): string {
-    return (this.ip.indexOf(':') >= 0)
+    return this.ip.isV6
     ? `[${this.ipZone}]:${this.port}`
     : `${this.ip}:${this.port}`;
   }
@@ -136,17 +170,14 @@ function strictParseInt(x: string): number {
 }
 
 interface cons<T> {
-  new(ip: string, port: number, zone: string): T;
+  new(ip: IP, port: number, zone: string): T;
 }
 
 function parseL4<T>(x: cons<T>, addr: NetLocish): T {
   const nl = asNetLoc(addr);
-  let ip = nl[0];
-  let zone = '';
-  if (net.isIPv6(ip))
-    [ip, zone] = splitIPv6Zone(ip);
+  const [ip, zone] = IPFuncs.parseIPAddr(nl[0]);
 
-  return new x(ip, strictParseInt(nl[1]), zone);
+  return new x(new IP(ip), strictParseInt(nl[1]), zone || '');
 }
 
 export class TCPAddr extends L4Addr {

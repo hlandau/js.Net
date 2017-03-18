@@ -1,5 +1,5 @@
 import * as chai from "chai";
-import {IPAddr, TCPAddr, UDPAddr} from "hlandau.Net/Addr";
+import {IP, IPAddr, TCPAddr, UDPAddr} from "hlandau.Net/Addr";
 import {NetLocish} from "hlandau.Net/NetLoc";
 chai.should();
 
@@ -14,7 +14,7 @@ interface ConstructItem {
 interface ResolveItem {
   s: NetLocish;
   d?: string;
-  ip?: string;
+  ip: string;
   port?: number;
   zone?: string;
 }
@@ -23,9 +23,9 @@ describe('IPAddr', () => {
   describe('#resolve', () => {
     it('should parse IP strings correctly', () => {
       const items: ResolveItem[] = [
+        {s: 'fe80::1%eth0', d: 'fe80::1%eth0', ip: 'fe80::1', zone: 'eth0'},
         {s: '127.0.0.1', d: '127.0.0.1', ip: '127.0.0.1'},
         {s: '::1', d: '::1', ip: '::1', zone: ''},
-        {s: 'fe80::1%eth0', d: 'fe80::1%eth0', ip: 'fe80::1', zone: 'eth0'},
       ];
 
       for (const item of items) {
@@ -33,7 +33,7 @@ describe('IPAddr', () => {
         a.should.be.instanceof(IPAddr);
         a.network.should.equal('ip');
         a.toString().should.equal(item.d);
-        a.ip.should.equal(item.ip);
+        a.ip.toString().should.equal(item.ip.toString());
         a.zone.should.equal(item.zone || '');
       }
     });
@@ -51,11 +51,11 @@ describe('L4Addr', () => {
 
       for (const Addr of [TCPAddr,UDPAddr]) {
         for (const item of items) {
-          const a = new Addr(item.ip, item.port, item.zone || '');
+          const a = new Addr(new IP(item.ip), item.port, item.zone || '');
           a.should.be.instanceof(Addr);
           a.network.should.equal(Addr === TCPAddr ? 'tcp' : 'udp');
           a.toString().should.equal(item.d);
-          a.ip.should.equal(item.ip);
+          a.ip.toString().should.equal(item.ip.toString());
           a.port.should.equal(item.port);
           a.zone.should.equal(item.zone || '');
         }
@@ -82,7 +82,7 @@ describe('L4Addr', () => {
           a.network.should.equal(Addr === TCPAddr ? 'tcp' : 'udp');
           a.toString().should.equal(item.d || item.s);
           if (item.ip !== undefined)
-            a.ip.should.equal(item.ip);
+            a.ip.toString().should.equal(item.ip.toString());
           if (item.port !== undefined)
             a.port.should.equal(item.port);
           if (item.zone !== undefined)
